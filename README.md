@@ -148,4 +148,4 @@ This project is released under the MIT License – free to use, modify, and dist
 
 ## 📬 Contact
 
-For questions or support, please contact: **[phamthiyenngoc77@gmail.com]** (replace with your real email).
+For questions or support, please contact: **[phamthiyenngoc77@gmail.com]**
