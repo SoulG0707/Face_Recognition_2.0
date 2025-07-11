@@ -194,7 +194,7 @@ class AttendanceApp(QWidget):
         student_group.setLayout(student_layout)
 
         # Nhãn thời gian
-        self.time_label = QLabel(f"Thời gian: 09:21 11/07/2025") # Mặc định thời gian, sẽ cập nhật sau khi khởi động ứng dụng
+        self.time_label = QLabel(f"Thời gian: 09:38 11/07/2025")  # Đặt thời gian hiện tại
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet("font-size: 14px; color: #4B5563;")
 
@@ -279,12 +279,14 @@ class AttendanceApp(QWidget):
                         if score > best_score:
                             best_score = score
                             student_id = known_id
+                print(f"Dự đoán: {student_id}, Độ tương đồng: {best_score:.2f}")  # Log chi tiết
                 if best_score < 0.7:
-                    self.attendance_label.setText("Chưa đăng ký thông tin của người này, vui lòng đăng ký trước.")
+                    print(f"Khuôn mặt chưa đăng ký: Độ tương đồng {best_score:.2f} < 0.7")
+                    self.attendance_label.setText("Chưa đăng ký thông tin của người này")
                     self.name_label.setText("Họ tên: ---")
                     self.id_label.setText("MSSV: ---")
                     self.major_label.setText("Ngành: ---")
-                elif best_score >= 0.7:  
+                elif best_score >= 0.7:
                     try:
                         if lstm_model and len(emotion_sequence) == MAX_SEQ_LEN:
                             input_tensor = torch.tensor(
@@ -338,7 +340,7 @@ class AttendanceApp(QWidget):
         running = False
         self.timer.stop()
         cap.release()
-        conn.close()  
+        conn.close()  # Đóng kết nối SQL khi thoát
         self.close()
 
 if __name__ == "__main__":
