@@ -21,14 +21,19 @@ print("Số sinh viên đã đăng ký:", len(known_faces))
 app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
 app.prepare(ctx_id=0, det_size=(640, 640))
 
-# Kết nối SQL Server
-conn = pyodbc.connect(
-    r"DRIVER={ODBC Driver 17 for SQL Server};"
-    r"SERVER=NOCNOC\SQLEXPRESS;"
-    r"DATABASE=attendance_db;"
-    r"Trusted_Connection=yes;"
-)
-cursor = conn.cursor()
+# Kết nối SQL Server với xử lý lỗi
+try:
+    conn = pyodbc.connect(
+        r"DRIVER={ODBC Driver 17 for SQL Server};"
+        r"SERVER=NOCNOC\SQLEXPRESS;"
+        r"DATABASE=attendance_db;"
+        r"Trusted_Connection=yes;"
+    )
+    cursor = conn.cursor()
+    print("Kết nối SQL Server thành công!")
+except pyodbc.Error as e:
+    print(f"Lỗi kết nối SQL Server: {e}")
+    sys.exit(1)
 
 # Trạng thái
 running = True
@@ -65,30 +70,36 @@ def emotion_to_vector(emotion):
 def mark_attendance(student_id, emotion):
     try:
         cursor.execute(
-            "SELECT student_id, major, name FROM students WHERE student_id = ?", student_id)
+            "SELECT student_id, major, name FROM students WHERE student_id = ?",
+            (student_id,)
+        )
         result = cursor.fetchone()
         if not result:
-            print(f"MSSV {student_id} không tồn tại.")
+            print(f"MSSV {student_id} không tồn tại trong bảng students.")
             return "Không tìm thấy MSSV"
 
         student_id, major, name = result
         now = datetime.now()
-        cursor.execute("""
-            SELECT id FROM attendance 
-            WHERE student_id = ? AND CONVERT(date, date) = ?
-        """, student_id, now.date())
+        cursor.execute(
+            "SELECT id FROM attendance WHERE student_id = ? AND CONVERT(date, date) = ?",
+            (student_id, now.date())
+        )
         if cursor.fetchone():
-            print(f"MSSV {student_id} đã điểm danh.")
+            print(f"MSSV {student_id} đã điểm danh hôm nay.")
             return f"MSSV {student_id} đã điểm danh."
-        cursor.execute("""
-            INSERT INTO attendance (student_id, major, date, time, emotion)
-            VALUES (?, ?, ?, ?, ?)
-        """, student_id, major, now.date(), now.time(), emotion)
-        conn.commit()
-        print(f"Điểm danh: {student_id}, Cảm xúc: {emotion}")
+
+        cursor.execute(
+            "INSERT INTO attendance (student_id, major, date, time, emotion) VALUES (?, ?, ?, ?, ?)",
+            (student_id, major, now.date(), now.time(), emotion)
+        )
+        conn.commit()  # Đảm bảo commit sau mỗi lần chèn
+        print(f"Đã ghi điểm danh: {name} (MSSV: {student_id}), Cảm xúc: {emotion}")
         return f"Đã ghi: {name} (MSSV: {student_id}), Cảm xúc: {emotion}"
+    except pyodbc.Error as e:
+        print(f"Lỗi khi ghi vào SQL Server: {e}")
+        return "Lỗi ghi điểm danh"
     except Exception as e:
-        print("Lỗi ghi điểm danh:", str(e))
+        print(f"Lỗi không xác định khi ghi điểm danh: {e}")
         return "Lỗi ghi điểm danh"
 
 class AttendanceApp(QWidget):
@@ -183,7 +194,7 @@ class AttendanceApp(QWidget):
         student_group.setLayout(student_layout)
 
         # Nhãn thời gian
-        self.time_label = QLabel(f"Thời gian: 15:20 10/07/2025")  # Đặt thời gian hiện tại
+        self.time_label = QLabel(f"Thời gian: 09:13 11/07/2025")  # Đặt thời gian hiện tại
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet("font-size: 14px; color: #4B5563;")
 
@@ -290,7 +301,7 @@ class AttendanceApp(QWidget):
                             msg = mark_attendance(student_id, current_emotion)
                             self.attendance_label.setText(msg)
                             cursor.execute(
-                                "SELECT name, major FROM students WHERE student_id = ?", student_id)
+                                "SELECT name, major FROM students WHERE student_id = ?", (student_id,))
                             result = cursor.fetchone()
                             if result:
                                 name, major = result
@@ -323,6 +334,7 @@ class AttendanceApp(QWidget):
         running = False
         self.timer.stop()
         cap.release()
+        conn.close()  # Đóng kết nối SQL khi thoát
         self.close()
 
 if __name__ == "__main__":
