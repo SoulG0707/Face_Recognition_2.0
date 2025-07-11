@@ -67,7 +67,7 @@ def emotion_to_vector(emotion):
         vec[emotions.index(emotion)] = 1
     return vec
 
-def mark_attendance(student_id, emotion):
+def mark_attendance(student_id, action, emotion):
     try:
         cursor.execute(
             "SELECT student_id, major, name FROM students WHERE student_id = ?",
@@ -80,24 +80,42 @@ def mark_attendance(student_id, emotion):
 
         student_id, major, name = result
         now = datetime.now()
-        cursor.execute(
-            "SELECT id FROM attendance WHERE student_id = ? AND CONVERT(date, date) = ?",
-            (student_id, now.date())
-        )
-        if cursor.fetchone():
-            print(f"MSSV {student_id} đã điểm danh hôm nay.")
-            return f"MSSV {student_id} đã điểm danh."
-
-        cursor.execute(
-            "INSERT INTO attendance (student_id, major, date, time, emotion) VALUES (?, ?, ?, ?, ?)",
-            (student_id, major, now.date(), now.time(), emotion)
-        )
-        conn.commit()  # Đảm bảo commit sau mỗi lần chèn
-        print(f"Đã ghi điểm danh: {name} (MSSV: {student_id}), Cảm xúc: {emotion}")
-        return f"Đã ghi: {name} (MSSV: {student_id}), Cảm xúc: {emotion}"
+        if action == "check_in":
+            cursor.execute(
+                "SELECT id FROM attendance WHERE student_id = ? AND CONVERT(date, date) = ? AND in_time IS NOT NULL",
+                (student_id, now.date())
+            )
+            if cursor.fetchone():
+                print(f"MSSV {student_id} đã check-in hôm nay.")
+                return f"MSSV {student_id} đã check-in."
+            print(f"Thực hiện INSERT với MSSV: {student_id}, Emotion: {emotion}")
+            cursor.execute(
+                "INSERT INTO attendance (student_id, major, date, in_time, emotion) VALUES (?, ?, ?, ?, ?)",
+                (student_id, major, now.date(), now.time(), emotion if emotion else "N/A")
+            )
+            conn.commit()
+            print(f"Đã check-in: {name} (MSSV: {student_id}), Cảm xúc: {emotion if emotion else 'N/A'} - Ghi vào SQL thành công")
+            return f"Đã check-in: {name} (MSSV: {student_id}), Cảm xúc: {emotion if emotion else 'N/A'}"
+        elif action == "check_out":
+            cursor.execute(
+                "SELECT id, in_time FROM attendance WHERE student_id = ? AND CONVERT(date, date) = ? AND in_time IS NOT NULL AND out_time IS NULL",
+                (student_id, now.date())
+            )
+            record = cursor.fetchone()
+            if not record:
+                print(f"MSSV {student_id} chưa check-in hôm nay hoặc đã check-out.")
+                return f"MSSV {student_id} chưa check-in hoặc đã check-out."
+            print(f"Thực hiện UPDATE cho MSSV: {student_id}")
+            cursor.execute(
+                "UPDATE attendance SET out_time = ? WHERE id = ?",
+                (now.time(), record[0])
+            )
+            conn.commit()
+            print(f"Đã check-out: {name} (MSSV: {student_id}) - Ghi vào SQL thành công")
+            return f"Đã check-out: {name} (MSSV: {student_id})"
     except pyodbc.Error as e:
         print(f"Lỗi khi ghi vào SQL Server: {e}")
-        return "Lỗi ghi điểm danh"
+        return f"Lỗi ghi điểm danh: {str(e)}"
     except Exception as e:
         print(f"Lỗi không xác định khi ghi điểm danh: {e}")
         return "Lỗi ghi điểm danh"
@@ -194,12 +212,14 @@ class AttendanceApp(QWidget):
         student_group.setLayout(student_layout)
 
         # Nhãn thời gian
-        self.time_label = QLabel(f"Thời gian: 09:38 11/07/2025")  # Đặt thời gian hiện tại
+        self.time_label = QLabel(f"Thời gian: 10:27 11/07/2025")  # Đặt thời gian hiện tại
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet("font-size: 14px; color: #4B5563;")
 
         # Nút điều khiển
         self.start_btn = QPushButton("Bắt Đầu Điểm Danh")
+        self.check_in_btn = QPushButton("Check-in")
+        self.check_out_btn = QPushButton("Check-out")
         self.stop_btn = QPushButton("Dừng")
         self.stop_btn.setObjectName("stopButton")
         self.exit_btn = QPushButton("Thoát")
@@ -212,6 +232,8 @@ class AttendanceApp(QWidget):
 
         # Kết nối nút
         self.start_btn.clicked.connect(self.start_recognition)
+        self.check_in_btn.clicked.connect(self.check_in)
+        self.check_out_btn.clicked.connect(self.check_out)
         self.stop_btn.clicked.connect(self.stop_recognition)
         self.exit_btn.clicked.connect(self.close_app)
 
@@ -230,6 +252,8 @@ class AttendanceApp(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
         btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.check_in_btn)
+        btn_layout.addWidget(self.check_out_btn)
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.exit_btn)
 
@@ -251,8 +275,18 @@ class AttendanceApp(QWidget):
         now = datetime.now().strftime("%H:%M %d/%m/%Y")
         self.time_label.setText(f"Thời gian: {now}")
 
+    def start_recognition(self):
+        global recognizing
+        recognizing = True
+        self.attendance_label.setText("Đang nhận diện...")
+        self.name_label.setText("Họ tên: ---")
+        self.id_label.setText("MSSV: ---")
+        self.major_label.setText("Ngành: ---")
+
     def update_frame(self):
         global recognizing, seen, emotion_sequence
+        if not recognizing:
+            return
         ret, frame = cap.read()
         if not ret:
             self.video_label.setText("Không thể truy cập camera!")
@@ -264,70 +298,140 @@ class AttendanceApp(QWidget):
         scaled_img = img.scaled(600, 400, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.video_label.setPixmap(QPixmap.fromImage(scaled_img))
 
-        if recognizing:
-            faces = app.get(adjusted)
-            for face in faces:
-                if not hasattr(face, "embedding"):
-                    continue
-                emb = face.embedding
-                student_id = "Unknown"
-                best_score = 0.0
-                for known_id, emb_list in known_faces.items():
-                    for known_emb in emb_list:
-                        score = float(
-                            np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb)))
-                        if score > best_score:
-                            best_score = score
-                            student_id = known_id
-                print(f"Dự đoán: {student_id}, Độ tương đồng: {best_score:.2f}")  # Log chi tiết
-                if best_score < 0.7:
-                    print(f"Khuôn mặt chưa đăng ký: Độ tương đồng {best_score:.2f} < 0.7")
-                    self.attendance_label.setText("Chưa đăng ký thông tin của người này")
-                    self.name_label.setText("Họ tên: ---")
-                    self.id_label.setText("MSSV: ---")
-                    self.major_label.setText("Ngành: ---")
-                elif best_score >= 0.7:
-                    try:
-                        if lstm_model and len(emotion_sequence) == MAX_SEQ_LEN:
-                            input_tensor = torch.tensor(
-                                [emotion_sequence], dtype=torch.float32)
-                            output = lstm_model(input_tensor)
-                            pred = torch.argmax(output, dim=1).item()
-                            current_emotion = behavior_labels[int(pred)]
-                        else:
+        faces = app.get(adjusted)
+        for face in faces:
+            if not hasattr(face, "embedding"):
+                continue
+            emb = face.embedding
+            student_id = "Unknown"
+            best_score = 0.0
+            for known_id, emb_list in known_faces.items():
+                for known_emb in emb_list:
+                    score = float(
+                        np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb)))
+                    if score > best_score:
+                        best_score = score
+                        student_id = known_id
+            print(f"Dự đoán: {student_id}, Độ tương đồng: {best_score:.2f}")  # Log nhận diện
+            if best_score < 0.7:
+                print(f"Khuôn mặt chưa đăng ký: Độ tương đồng {best_score:.2f} < 0.7")
+                self.attendance_label.setText("Chưa đăng ký thông tin của người này")
+                self.name_label.setText("Họ tên: ---")
+                self.id_label.setText("MSSV: ---")
+                self.major_label.setText("Ngành: ---")
+                self.emotion_label.setText("Cảm xúc: Chưa nhận diện")
+            elif best_score >= 0.7:
+                try:
+                    current_emotion = None
+                    if lstm_model and len(emotion_sequence) == MAX_SEQ_LEN:
+                        print(f"Đang sử dụng LSTM để dự đoán cảm xúc, độ dài sequence: {len(emotion_sequence)}")
+                        input_tensor = torch.tensor(
+                            [emotion_sequence], dtype=torch.float32)
+                        output = lstm_model(input_tensor)
+                        pred = torch.argmax(output, dim=1).item()
+                        current_emotion = behavior_labels[int(pred)]
+                        print(f"LSTM dự đoán: {current_emotion}")
+                    else:
+                        print(f"Đang sử dụng DeepFace để nhận diện cảm xúc trên ảnh {adjusted.shape}")
+                        try:
                             analysis = DeepFace.analyze(
                                 adjusted, actions=["emotion"], enforce_detection=False)
                             current_emotion = analysis[0]["dominant_emotion"]
-                        vec = emotion_to_vector(current_emotion)
-                        emotion_sequence.append(vec)
-                        if len(emotion_sequence) > MAX_SEQ_LEN:
-                            emotion_sequence.pop(0)
-                        if student_id not in seen:
-                            seen.add(student_id)
-                            msg = mark_attendance(student_id, current_emotion)
-                            self.attendance_label.setText(msg)
-                            cursor.execute(
-                                "SELECT name, major FROM students WHERE student_id = ?", (student_id,))
-                            result = cursor.fetchone()
-                            if result:
-                                name, major = result
-                                self.name_label.setText(f"Họ tên: {name}")
-                                self.id_label.setText(f"MSSV: {student_id}")
-                                self.major_label.setText(f"Ngành: {major}")
-                        self.emotion_label.setText(
-                            f"Cảm xúc: {current_emotion}")
-                    except Exception as e:
-                        print("Lỗi nhận diện cảm xúc:", str(e))
-                        self.emotion_label.setText("Cảm xúc: Lỗi")
+                            print(f"DeepFace nhận diện: {current_emotion}")
+                        except Exception as e:
+                            print(f"Lỗi nhận diện cảm xúc với DeepFace: {e}")
+                            current_emotion = "Không xác định"
+                    vec = emotion_to_vector(current_emotion)
+                    emotion_sequence.append(vec)
+                    if len(emotion_sequence) > MAX_SEQ_LEN:
+                        emotion_sequence.pop(0)
+                    print(f"Cảm xúc hiện tại: {current_emotion}, Độ dài sequence: {len(emotion_sequence)}")
+                    self.attendance_label.setText(f"Nhận diện: {student_id}")
+                    cursor.execute(
+                        "SELECT name, major FROM students WHERE student_id = ?", (student_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        name, major = result
+                        self.name_label.setText(f"Họ tên: {name}")
+                        self.id_label.setText(f"MSSV: {student_id}")
+                        self.major_label.setText(f"Ngành: {major}")
+                    self.emotion_label.setText(
+                        f"Cảm xúc: {current_emotion if current_emotion else 'Không nhận diện'}")
+                except Exception as e:
+                    print(f"Lỗi tổng quát khi nhận diện: {e}")
+                    self.emotion_label.setText("Cảm xúc: Lỗi")
 
-    def start_recognition(self):
-        global recognizing, seen
-        recognizing = True
-        seen.clear()
-        self.attendance_label.setText("Đang nhận diện...")
-        self.name_label.setText("Họ tên: ---")
-        self.id_label.setText("MSSV: ---")
-        self.major_label.setText("Ngành: ---")
+    def check_in(self):
+        global recognizing
+        if not recognizing:
+            self.attendance_label.setText("Vui lòng bắt đầu nhận diện trước!")
+            return
+        faces = app.get(adjust_image(cap.read()[1]))
+        for face in faces:
+            if not hasattr(face, "embedding"):
+                continue
+            emb = face.embedding
+            student_id = "Unknown"
+            best_score = 0.0
+            for known_id, emb_list in known_faces.items():
+                for known_emb in emb_list:
+                    score = float(
+                        np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb)))
+                    if score > best_score:
+                        best_score = score
+                        student_id = known_id
+            if best_score >= 0.7:
+                # Lấy cảm xúc từ giao diện
+                current_emotion = self.emotion_label.text().replace("Cảm xúc: ", "").strip()
+                print(f"Chuẩn bị check-in cho MSSV: {student_id}, Cảm xúc lấy từ giao diện: {current_emotion}")
+                msg = mark_attendance(student_id, "check_in", current_emotion)
+                print(f"Kết quả check-in: {msg}")
+                self.attendance_label.setText(msg)
+                cursor.execute(
+                    "SELECT name, major FROM students WHERE student_id = ?", (student_id,))
+                result = cursor.fetchone()
+                if result:
+                    name, major = result
+                    self.name_label.setText(f"Họ tên: {name}")
+                    self.id_label.setText(f"MSSV: {student_id}")
+                    self.major_label.setText(f"Ngành: {major}")
+            else:
+                self.attendance_label.setText("Khuôn mặt chưa đăng ký!")
+
+    def check_out(self):
+        global recognizing
+        if not recognizing:
+            self.attendance_label.setText("Vui lòng bắt đầu nhận diện trước!")
+            return
+        faces = app.get(adjust_image(cap.read()[1]))
+        for face in faces:
+            if not hasattr(face, "embedding"):
+                continue
+            emb = face.embedding
+            student_id = "Unknown"
+            best_score = 0.0
+            for known_id, emb_list in known_faces.items():
+                for known_emb in emb_list:
+                    score = float(
+                        np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb)))
+                    if score > best_score:
+                        best_score = score
+                        student_id = known_id
+            if best_score >= 0.7:
+                print(f"Chuẩn bị check-out cho MSSV: {student_id}")
+                msg = mark_attendance(student_id, "check_out", None)
+                print(f"Kết quả check-out: {msg}")
+                self.attendance_label.setText(msg)
+                cursor.execute(
+                    "SELECT name, major FROM students WHERE student_id = ?", (student_id,))
+                result = cursor.fetchone()
+                if result:
+                    name, major = result
+                    self.name_label.setText(f"Họ tên: {name}")
+                    self.id_label.setText(f"MSSV: {student_id}")
+                    self.major_label.setText(f"Ngành: {major}")
+            else:
+                self.attendance_label.setText("Khuôn mặt chưa đăng ký!")
 
     def stop_recognition(self):
         global recognizing, emotion_sequence
